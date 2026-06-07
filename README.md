@@ -16,11 +16,13 @@ Client → API (Gin) → Validate + Idempotency → PostgreSQL (insert)
 
 ## Quick Start
 
-### Prerequisites
-- Docker & Docker Compose
-- Go 1.22+ (for running tests locally)
+**Prerequisites:** Docker & Docker Compose only. No Go installation needed to run.
 
-### 1. Clone & Configure
+### Step 1 — Get a webhook URL
+
+Go to [webhook.site](https://webhook.site), copy the unique URL shown on the page (e.g. `https://webhook.site/abc-123`). This is where delivered notifications will appear.
+
+### Step 2 — Clone & configure
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/notify-engine.git
@@ -28,51 +30,64 @@ cd notify-engine
 cp .env.example .env
 ```
 
-Edit `.env` and set your webhook.site URL:
+Open `.env` and replace the webhook URL:
 ```
 PROVIDER_WEBHOOK_URL=https://webhook.site/YOUR-UUID-HERE
 ```
 
-> Get your unique URL at [webhook.site](https://webhook.site)
-
-### 2. Start Everything (one command)
+### Step 3 — Start everything
 
 ```bash
-docker-compose up --build
+docker-compose up --build -d
 ```
 
-Wait for all services to be ready:
-```
-notif-postgres  | ready to accept connections
-notif-rabbitmq  | started
-notif-redis     | Ready to accept connections
-notif-migrate   | All migrations applied successfully
-notif-api       | API starting {"addr":"0.0.0.0:8080"}
-notif-worker    | worker started {"concurrency":5,"rate_limit":100,"scheduler":"enabled"}
+This starts PostgreSQL, RabbitMQ, Redis, Jaeger, runs migrations, and starts the API + Worker. Wait ~15 seconds for all services to be healthy.
+
+### Step 4 — Verify it's running
+
+```bash
+curl http://localhost:8080/health
 ```
 
-### 3. Test with Postman
+Expected:
+```json
+{"status":"healthy","services":{"postgres":"healthy","rabbitmq":"healthy","redis":"healthy"}}
+```
 
-1. Open Postman
-2. Import `docs/Notify_Engine.postman_collection.json`
-3. Right-click "Notify Engine API" → **Run collection**
-4. All 40 requests run in order with automated assertions
+### Step 5 — Send a notification
 
-The collection auto-captures IDs between requests — just run in order.
+```bash
+curl -X POST http://localhost:8080/api/v1/notifications \
+  -H "Content-Type: application/json" \
+  -d '{"recipient":"+905551234567","channel":"sms","content":"Hello from notify-engine","priority":"high"}'
+```
 
-### 4. Verify Delivery
+Within 1-2 seconds the status changes from `queued` → `sent` and the request appears on your webhook.site page.
 
-Check [webhook.site](https://webhook.site) — you'll see the delivered notifications as POST requests.
+### Step 6 — View the trace in Jaeger
 
-### 5. Run Unit Tests
+Open **http://localhost:16686**, select service **notify-engine-api**, click **Find Traces**. You'll see the full end-to-end trace: HTTP handler → service → RabbitMQ publish → worker consume → delivery.
+
+### Other useful endpoints
+
+| URL | What it shows |
+|-----|--------------|
+| http://localhost:8080/swagger | Interactive API docs |
+| http://localhost:8080/metrics | Queue depth, latency, success rates |
+| http://localhost:16686 | Jaeger distributed traces |
+| http://localhost:15672 | RabbitMQ management (guest/guest) |
+
+### Run unit tests
 
 ```bash
 go test ./... -v
 ```
 
-24 unit tests covering model validation, handler responses, service business logic, and delivery provider behavior.
+### Full Postman collection
 
-### 6. Cleanup
+Import `docs/Notify_Engine.postman_collection.json` into Postman and run the collection — 40 requests with automated assertions covering all endpoints.
+
+### Cleanup
 
 ```bash
 docker-compose down -v
@@ -208,6 +223,9 @@ Channel-specific rules enforced at API level:
 - Email: valid email address, subject required, max 50000 characters  
 - Push: device token required, max 256 characters
 
+### Distributed Tracing
+OpenTelemetry SDK with OTLP/HTTP exporter. Trace context is propagated across service boundaries via W3C TraceContext headers embedded in RabbitMQ message headers — so a single notification request produces one unified trace that spans both the API and the Worker process. All major operations (HTTP handler, service layer, queue publish/consume, rate limiter, delivery) are individually instrumented with span attributes.
+
 ### Template System
 Reusable message templates with `{{variable}}` placeholders. Templates are channel-specific and stored in DB. When creating a notification, pass `template_id` + `variables` instead of content — the service renders the template by replacing placeholders. Channel mismatch between template and notification is validated.
 
@@ -228,6 +246,7 @@ notify-engine/
 │   ├── queue/                   # RabbitMQ publisher, consumer, scheduler
 │   ├── delivery/                # External provider (webhook.site)
 │   ├── ratelimiter/             # Redis rate limiter (Lua script)
+│   ├── telemetry/               # OpenTelemetry tracer init (Jaeger/OTLP)
 │   └── middleware/              # Correlation ID, request logging
 ├── migrations/                  # Versioned SQL migrations
 ├── docs/
@@ -265,9 +284,56 @@ Import `docs/Notify_Engine.postman_collection.json` and run the full collection.
 - Cancel lifecycle (pending→cancelled, already cancelled→404, sent→404)
 - Template CRUD, rendering, channel mismatch validation
 
+## Distributed Tracing
+
+Every notification request is traced end-to-end across the API and Worker using [OpenTelemetry](https://opentelemetry.io/) with [Jaeger](https://jaegertracing.io/) as the backend.
+
+### Open Jaeger UI
+
+```
+http://localhost:16686
+```
+
+Select service **notify-engine-api** or **notify-engine-worker**, then click **Find Traces**.
+
+### Trace Flow
+
+```
+POST /api/v1/notifications       (API — notify-engine-api)
+  └─ service.CreateNotification
+       └─ queue.publish          ← trace context injected into AMQP headers
+
+            └─ worker.process    (Worker — notify-engine-worker)
+                 ├─ ratelimiter.allow
+                 └─ delivery.send
+```
+
+The trace spans two services. The API injects the W3C TraceContext into the RabbitMQ message headers when publishing. The Worker extracts it when consuming — both sides appear under the **same TraceID** in Jaeger.
+
+### Instrumented Spans
+
+| Span | Service | Attributes |
+|------|---------|-----------|
+| `POST /api/v1/notifications` | api | http.method, http.route, http.status_code |
+| `service.CreateNotification` | api | notification.id, channel, recipient, priority |
+| `queue.publish` | api | messaging.system, messaging.destination, notification.id |
+| `worker.process` | worker | notification.id, channel, recipient |
+| `ratelimiter.allow` | worker | ratelimiter.channel, ratelimiter.allowed |
+| `delivery.send` | worker | delivery.channel, delivery.to, http.status_code |
+
+### Configuration
+
+| Env Variable | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4318` | Jaeger OTLP endpoint |
+| `OTEL_SERVICE_NAME` | `notify-engine` | Service name shown in Jaeger |
+
+> Tracing is non-blocking — if Jaeger is unavailable the system logs a warning and continues normally.
+
 ## Monitoring
 
 - **Swagger UI**: http://localhost:8080/swagger
+- **Jaeger UI**: http://localhost:16686 — distributed traces
 - **RabbitMQ Management**: http://localhost:15672 (guest/guest)
 - **Health endpoint**: `GET /health` — checks PostgreSQL, Redis, RabbitMQ
 - **Metrics endpoint**: `GET /metrics` — queue depth, success/failure rates, latency per channel
@@ -275,4 +341,4 @@ Import `docs/Notify_Engine.postman_collection.json` and run the full collection.
 
 ## Tech Stack
 
-Go 1.22 · Gin · PostgreSQL 16 · RabbitMQ 3.13 · Redis 7 · Docker Compose
+Go 1.25 · Gin · PostgreSQL 16 · RabbitMQ 3.13 · Redis 7 · OpenTelemetry · Jaeger · Docker Compose

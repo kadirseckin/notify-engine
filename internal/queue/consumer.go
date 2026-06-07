@@ -11,11 +11,15 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"notify-engine/internal/config"
 	"notify-engine/internal/delivery"
 	"notify-engine/internal/model"
 	"notify-engine/internal/ratelimiter"
 	"notify-engine/internal/repository"
+	"notify-engine/internal/telemetry"
 )
 
 type Consumer struct {
@@ -87,14 +91,25 @@ func (c *Consumer) worker(ctx context.Context, channel string, deliveries <-chan
 }
 
 func (c *Consumer) processMessage(ctx context.Context, msg amqp.Delivery, channel string, logger *slog.Logger) {
+	// Extract trace context propagated from publisher via AMQP headers
+	propagatedCtx := otel.GetTextMapPropagator().Extract(ctx, amqpCarrier(msg.Headers))
+	ctx, span := otel.Tracer(telemetry.Name).Start(propagatedCtx, "worker.process")
+	defer span.End()
+
 	var n model.Notification
 	if err := json.Unmarshal(msg.Body, &n); err != nil {
 		logger.Error("unmarshal failed", "error", err)
+		span.SetStatus(codes.Error, "unmarshal failed")
 		if err := msg.Nack(false, false); err != nil {
 			logger.Error("nack failed", "error", err)
 		}
 		return
 	}
+	span.SetAttributes(
+		attribute.String("notification.id", n.ID.String()),
+		attribute.String("notification.channel", string(n.Channel)),
+		attribute.String("notification.recipient", n.Recipient),
+	)
 	logger = logger.With("notification_id", n.ID)
 	logger.Info("processing")
 
@@ -136,10 +151,12 @@ func (c *Consumer) processMessage(ctx context.Context, msg amqp.Delivery, channe
 	latency := time.Since(start)
 
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		c.handleFailure(ctx, msg, &n, err, logger)
 		return
 	}
 
+	span.SetAttributes(attribute.String("provider.message_id", resp.MessageID))
 	_ = c.repo.UpdateStatus(ctx, n.ID, model.StatusSent, &resp.MessageID, nil)
 	if err := msg.Ack(false); err != nil {
 		logger.Error("ack failed", "error", err)

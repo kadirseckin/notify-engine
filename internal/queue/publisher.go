@@ -7,8 +7,11 @@ import (
 	"log/slog"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"notify-engine/internal/config"
 	"notify-engine/internal/model"
+	"notify-engine/internal/telemetry"
 )
 
 type Publisher interface {
@@ -74,15 +77,52 @@ func (p *rabbitPublisher) setup() error {
 }
 
 func (p *rabbitPublisher) Publish(ctx context.Context, notification *model.Notification) error {
+	ctx, span := otel.Tracer(telemetry.Name).Start(ctx, "queue.publish")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("messaging.system", "rabbitmq"),
+		attribute.String("messaging.destination", fmt.Sprintf("notification.%s", notification.Channel)),
+		attribute.String("notification.id", notification.ID.String()),
+		attribute.String("notification.channel", string(notification.Channel)),
+	)
+
 	body, err := json.Marshal(notification)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+
+	headers := amqp.Table{}
+	otel.GetTextMapPropagator().Inject(ctx, amqpCarrier(headers))
+
 	return p.channel.PublishWithContext(ctx, p.cfg.Exchange, fmt.Sprintf("notification.%s", notification.Channel),
 		false, false, amqp.Publishing{
 			DeliveryMode: amqp.Persistent, ContentType: "application/json",
-			Priority: uint8(notification.Priority.Int()), MessageId: notification.ID.String(), Body: body,
+			Priority: uint8(notification.Priority.Int()), MessageId: notification.ID.String(),
+			Headers: headers, Body: body,
 		})
+}
+
+type amqpCarrier amqp.Table
+
+func (c amqpCarrier) Get(key string) string {
+	val, ok := amqp.Table(c)[key]
+	if !ok {
+		return ""
+	}
+	s, _ := val.(string)
+	return s
+}
+
+func (c amqpCarrier) Set(key, value string) {
+	amqp.Table(c)[key] = value
+}
+
+func (c amqpCarrier) Keys() []string {
+	keys := make([]string, 0, len(amqp.Table(c)))
+	for k := range amqp.Table(c) {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func (p *rabbitPublisher) Close() error {

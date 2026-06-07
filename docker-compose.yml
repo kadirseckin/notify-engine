@@ -48,6 +48,15 @@ services:
       timeout: 5s
       retries: 5
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: notif-jaeger
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   migrate:
     build:
       context: .
@@ -85,6 +94,8 @@ services:
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       REDIS_ADDR: "redis:6379"
       PROVIDER_WEBHOOK_URL: "${PROVIDER_WEBHOOK_URL:-https://webhook.site/your-uuid-here}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "jaeger:4318"
+      OTEL_SERVICE_NAME: "notify-engine-api"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -92,6 +103,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     restart: unless-stopped
 
   worker:
@@ -113,6 +126,8 @@ services:
       WORKER_CONCURRENCY: "5"
       WORKER_MAX_RETRIES: "3"
       WORKER_RATE_LIMIT_PER_SEC: "100"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "jaeger:4318"
+      OTEL_SERVICE_NAME: "notify-engine-worker"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -120,6 +135,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

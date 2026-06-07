@@ -9,10 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"notify-engine/internal/model"
 	"notify-engine/internal/queue"
 	"notify-engine/internal/repository"
+	"notify-engine/internal/telemetry"
 )
 
 type NotificationService interface {
@@ -36,7 +40,16 @@ func NewNotificationService(repo repository.NotificationRepository, tmplRepo rep
 }
 
 func (s *notificationService) Create(ctx context.Context, req model.CreateNotificationRequest) (*model.Notification, error) {
+	ctx, span := otel.Tracer(telemetry.Name).Start(ctx, "service.CreateNotification")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("notification.channel", string(req.Channel)),
+		attribute.String("notification.recipient", req.Recipient),
+		attribute.String("notification.priority", string(req.Priority)),
+	)
+
 	if errs := req.Validate(); len(errs) > 0 {
+		span.SetStatus(codes.Error, "validation failed")
 		return nil, &ValidationErr{Errors: errs}
 	}
 
@@ -97,6 +110,7 @@ func (s *notificationService) Create(ctx context.Context, req model.CreateNotifi
 		}
 	}
 
+	span.SetAttributes(attribute.String("notification.id", n.ID.String()))
 	s.logger.Info("created", "id", n.ID, "channel", n.Channel, "priority", n.Priority)
 	return n, nil
 }

@@ -9,7 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"notify-engine/internal/config"
+	"notify-engine/internal/telemetry"
 )
 
 type Provider interface {
@@ -39,12 +43,21 @@ func NewWebhookProvider(cfg config.ProviderConfig) Provider {
 }
 
 func (p *webhookProvider) Send(ctx context.Context, req DeliveryRequest) (*DeliveryResponse, error) {
+	ctx, span := otel.Tracer(telemetry.Name).Start(ctx, "delivery.send")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("delivery.channel", req.Channel),
+		attribute.String("delivery.to", req.To),
+	)
+
 	body, err := json.Marshal(req)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.webhookURL, bytes.NewReader(body))
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -60,7 +73,9 @@ func (p *webhookProvider) Send(ctx context.Context, req DeliveryRequest) (*Deliv
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		span.SetStatus(codes.Error, fmt.Sprintf("provider status %d", resp.StatusCode))
 		return nil, &ProviderError{StatusCode: resp.StatusCode, Body: string(respBody),
 			Retryable: resp.StatusCode == 429 || resp.StatusCode >= 500}
 	}

@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: "1.22" }
+        with: { go-version: "1.25" }
       - uses: golangci/golangci-lint-action@v7
 
   test:
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: "1.22" }
+        with: { go-version: "1.25" }
       - run: go test ./... -v -race -coverprofile=coverage.out
       - uses: actions/upload-artifact@v4
         with: { name: coverage, path: coverage.out }
@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: "1.22" }
+        with: { go-version: "1.25" }
       - run: CGO_ENABLED=0 go build -o bin/api ./cmd/api
       - run: CGO_ENABLED=0 go build -o bin/worker ./cmd/worker
       - run: docker build --target api -t notify-engine:test .

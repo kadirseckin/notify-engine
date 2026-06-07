@@ -17,12 +17,21 @@ import (
 	"notify-engine/internal/queue"
 	"notify-engine/internal/ratelimiter"
 	"notify-engine/internal/repository"
+	"notify-engine/internal/telemetry"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 	cfg := config.Load()
+
+	shutdownTracer, err := telemetry.InitTracer(context.Background(), cfg.Telemetry.ServiceName, cfg.Telemetry.OTLPEndpoint)
+	if err != nil {
+		logger.Warn("tracing unavailable", "error", err)
+	} else {
+		defer func() { _ = shutdownTracer(context.Background()) }()
+		logger.Info("tracing initialized", "endpoint", cfg.Telemetry.OTLPEndpoint)
+	}
 
 	db, err := sqlx.Connect("postgres", cfg.Database.DSN())
 	if err != nil {

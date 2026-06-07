@@ -14,6 +14,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"notify-engine/internal/config"
 	"notify-engine/internal/handler"
@@ -21,12 +22,21 @@ import (
 	"notify-engine/internal/queue"
 	"notify-engine/internal/repository"
 	"notify-engine/internal/service"
+	"notify-engine/internal/telemetry"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 	cfg := config.Load()
+
+	shutdownTracer, err := telemetry.InitTracer(context.Background(), cfg.Telemetry.ServiceName, cfg.Telemetry.OTLPEndpoint)
+	if err != nil {
+		logger.Warn("tracing unavailable", "error", err)
+	} else {
+		defer func() { _ = shutdownTracer(context.Background()) }()
+		logger.Info("tracing initialized", "endpoint", cfg.Telemetry.OTLPEndpoint)
+	}
 
 	db, err := sqlx.Connect("postgres", cfg.Database.DSN())
 	if err != nil {
@@ -64,7 +74,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.CorrelationID(), middleware.RequestLogger(logger))
+	r.Use(gin.Recovery(), otelgin.Middleware(cfg.Telemetry.ServiceName), middleware.CorrelationID(), middleware.RequestLogger(logger))
 
 	r.GET("/health", healthHandler.Health)
 	r.GET("/metrics", healthHandler.Metrics)

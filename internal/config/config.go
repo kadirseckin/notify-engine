@@ -8,12 +8,18 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	RabbitMQ RabbitMQConfig
-	Redis    RedisConfig
-	Provider ProviderConfig
-	Worker   WorkerConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	RabbitMQ  RabbitMQConfig
+	Redis     RedisConfig
+	Provider  ProviderConfig
+	Worker    WorkerConfig
+	Telemetry TelemetryConfig
+}
+
+type TelemetryConfig struct {
+	OTLPEndpoint string
+	ServiceName  string
 }
 
 type ServerConfig struct {
@@ -96,6 +102,10 @@ func Load() *Config {
 			MaxRetries:      getEnvInt("WORKER_MAX_RETRIES", 3),
 			RetryBaseDelay:  getEnvDuration("WORKER_RETRY_BASE_DELAY", 5*time.Second),
 			RateLimitPerSec: getEnvInt("WORKER_RATE_LIMIT_PER_SEC", 100),
+		},
+		Telemetry: TelemetryConfig{
+			OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4318"),
+			ServiceName:  getEnv("OTEL_SERVICE_NAME", "notify-engine"),
 		},
 	}
 }
