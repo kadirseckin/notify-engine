@@ -15,6 +15,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	_ "time/tzdata"
 
 	"notify-engine/internal/config"
 	"notify-engine/internal/handler"

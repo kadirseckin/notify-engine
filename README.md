@@ -25,7 +25,7 @@ Go to [webhook.site](https://webhook.site), copy the unique URL shown on the pag
 ### Step 2 — Clone & configure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/notify-engine.git
+git clone https://github.com/kadirseckin/notify-engine.git
 cd notify-engine
 cp .env.example .env
 ```
@@ -83,9 +83,14 @@ Open **http://localhost:16686**, select service **notify-engine-api**, click **F
 go test ./... -v
 ```
 
-### Full Postman collection
+### Step 7 — Run the full Postman collection
 
-Import `docs/Notify_Engine.postman_collection.json` into Postman and run the collection — 40 requests with automated assertions covering all endpoints.
+1. Open Postman
+2. Import `docs/Notify_Engine.postman_collection.json`
+3. Right-click **"Notify Engine API"** → **Run collection**
+4. All 40 requests run in order with automated assertions
+
+The collection auto-captures IDs between requests — just run in order. Tests cover all CRUD operations, channel-specific validation, idempotency, batch with partial reject, pagination, cancel lifecycle, and template rendering.
 
 ### Cleanup
 
@@ -251,7 +256,7 @@ notify-engine/
 ├── migrations/                  # Versioned SQL migrations
 ├── docs/
 │   ├── swagger.yaml             # OpenAPI 3.0 spec
-│   └── Notify_Engine.postman_collection.json  # 34 requests, 68 tests
+│   └── Notify_Engine.postman_collection.json  # 40 requests, 76 assertions
 ├── .github/workflows/ci.yml     # GitHub Actions (lint + test + build)
 ├── docker-compose.yml           # One-command infrastructure
 ├── Dockerfile                   # Multi-stage build
@@ -270,7 +275,7 @@ go test ./... -v
 |------------|-------|----------|
 | model      | 6     | Validation rules (SMS/Email/Push/Batch) |
 | handler    | 6     | HTTP responses, error handling |
-| service    | 8     | Idempotency, batch, cancel, scheduling |
+| service    | 9     | Idempotency, batch, cancel, scheduling |
 | delivery   | 4     | Provider success/fail, retry decisions |
 
 ### Postman Collection (40 requests)

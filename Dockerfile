@@ -1,5 +1,4 @@
 FROM golang:1.25-alpine AS builder
-RUN apk add --no-cache git
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/worker ./cmd/work
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/migrate ./cmd/migrate
 
 FROM alpine:3.19 AS api
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /app
 COPY --from=builder /bin/api /bin/api
 COPY --from=builder /app/docs /app/docs
@@ -17,12 +16,12 @@ EXPOSE 8080
 ENTRYPOINT ["/bin/api"]
 
 FROM alpine:3.19 AS worker
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /bin/worker /bin/worker
 ENTRYPOINT ["/bin/worker"]
 
 FROM alpine:3.19 AS migrate
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /bin/migrate /bin/migrate
 COPY migrations /migrations
 ENTRYPOINT ["/bin/migrate"]
