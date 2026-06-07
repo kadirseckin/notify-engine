@@ -1,0 +1,513 @@
+{
+	"info": {
+		"name": "Notify Engine API",
+		"description": "Event-Driven Notification System — SMS, Email, Push\n\nThis collection covers all API endpoints with happy path and edge case scenarios.\n\n**Setup:**\n1. `docker-compose up --build`\n2. Set `baseUrl` variable to `http://localhost:8080`\n\n**Auto-fill:** Response IDs are automatically captured into collection variables. Run requests in order for best results.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "baseUrl", "value": "http://localhost:8080" },
+		{ "key": "notification_id", "value": "" },
+		{ "key": "batch_id", "value": "" },
+		{ "key": "scheduled_id", "value": "" },
+		{ "key": "email_id", "value": "" },
+		{ "key": "push_id", "value": "" },
+		{ "key": "template_id", "value": "" },
+		{ "key": "custom_template_id", "value": "" }
+	],
+	"item": [
+		{
+			"name": "1 — System",
+			"description": "Health check and metrics endpoints for observability.",
+			"item": [
+				{
+					"name": "Health Check",
+					"description": "Verifies all infrastructure dependencies (PostgreSQL, Redis, RabbitMQ) are healthy. Returns 200 if all services are up, 503 if any is degraded.",
+					"request": { "method": "GET", "url": "{{baseUrl}}/health" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"var json = pm.response.json();",
+						"pm.test('All services healthy', function() {",
+						"    pm.expect(json.status).to.eql('healthy');",
+						"    pm.expect(json.services.postgres).to.eql('healthy');",
+						"    pm.expect(json.services.redis).to.eql('healthy');",
+						"    pm.expect(json.services.rabbitmq).to.eql('healthy');",
+						"});"
+					]}}]
+				},
+				{
+					"name": "Metrics",
+					"description": "Real-time metrics: queue depth per channel (from RabbitMQ), success/failure rates, and counts by status.",
+					"request": { "method": "GET", "url": "{{baseUrl}}/metrics" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"var json = pm.response.json();",
+						"pm.test('Has queue_depth', function() { pm.expect(json).to.have.property('queue_depth'); });",
+						"pm.test('Has success_rate', function() { pm.expect(json).to.have.property('success_rate'); });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "2 — Create Notifications",
+			"description": "Create notifications across all 3 channels with channel-specific validation.",
+			"item": [
+				{
+					"name": "Create SMS",
+					"description": "Creates an SMS notification with E.164 phone format. Content max 160 chars.\n\nAuto-captures: notification_id variable.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"Your verification code is 4821\",\n  \"priority\": \"high\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Status queued', function() { pm.expect(json.data.status).to.eql('queued'); });",
+						"pm.test('Channel is sms', function() { pm.expect(json.data.channel).to.eql('sms'); });",
+						"pm.collectionVariables.set('notification_id', json.data.id);"
+					]}}]
+				},
+				{
+					"name": "Create Email",
+					"description": "Creates an Email notification. Subject is required for email. Content max 50000 chars.\n\nAuto-captures: email_id variable.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"<h1>Welcome!</h1><p>Thank you for joining.</p>\",\n  \"subject\": \"Welcome!\",\n  \"priority\": \"normal\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Channel is email', function() { pm.expect(json.data.channel).to.eql('email'); });",
+						"pm.collectionVariables.set('email_id', json.data.id);"
+					]}}]
+				},
+				{
+					"name": "Create Push",
+					"description": "Creates a Push notification with device token. Content max 256 chars.\n\nAuto-captures: push_id variable.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"device-token-abc123xyz\",\n  \"channel\": \"push\",\n  \"content\": \"You have a new message!\",\n  \"priority\": \"low\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Channel is push', function() { pm.expect(json.data.channel).to.eql('push'); });",
+						"pm.collectionVariables.set('push_id', json.data.id);"
+					]}}]
+				},
+				{
+					"name": "Create Scheduled (future)",
+					"description": "Creates a notification scheduled for future delivery. Should remain in pending status — not published to queue until scheduler picks it up.\n\nAuto-captures: scheduled_id for cancel test.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"+905559876543\",\n  \"channel\": \"sms\",\n  \"content\": \"Reminder: Your appointment is tomorrow\",\n  \"priority\": \"normal\",\n  \"scheduled_at\": \"2026-12-31T23:59:59Z\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Status is pending', function() { pm.expect(json.data.status).to.eql('pending'); });",
+						"pm.test('Has scheduled_at', function() { pm.expect(json.data.scheduled_at).to.not.be.null; });",
+						"pm.collectionVariables.set('scheduled_id', json.data.id);"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "3 — Idempotency",
+			"description": "Tests duplicate prevention. Sending the same idempotency_key twice should return the existing notification without creating a duplicate.",
+			"item": [
+				{
+					"name": "First Send (creates new)",
+					"description": "First request with idempotency_key. Creates a new notification and captures ID.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"Idempotency test\",\n  \"priority\": \"high\",\n  \"idempotency_key\": \"idemp-test-unique-001\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Has idempotency_key', function() { pm.expect(json.data.idempotency_key).to.eql('idemp-test-unique-001'); });",
+						"pm.collectionVariables.set('notification_id', json.data.id);"
+					]}}]
+				},
+				{
+					"name": "Second Send (returns existing — no duplicate)",
+					"description": "Same idempotency_key. Should return the SAME ID as the first send, proving no duplicate was created.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"Idempotency test\",\n  \"priority\": \"high\",\n  \"idempotency_key\": \"idemp-test-unique-001\"\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"var firstId = pm.collectionVariables.get('notification_id');",
+						"pm.test('Same ID as first send (no duplicate)', function() { pm.expect(json.data.id).to.eql(firstId); });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "4 — Batch Operations",
+			"description": "Batch creation up to 1000 per request. Supports partial validation — valid items accepted, invalid ones rejected individually.",
+			"item": [
+				{
+					"name": "Batch Create (3 valid)",
+					"description": "Creates 3 valid notifications. All should be accepted with shared batch_id.\n\nAuto-captures: batch_id variable.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications/batch",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"notifications\": [\n    {\"recipient\": \"+905551111111\", \"channel\": \"sms\", \"content\": \"Batch msg 1\", \"priority\": \"high\"},\n    {\"recipient\": \"+905552222222\", \"channel\": \"sms\", \"content\": \"Batch msg 2\", \"priority\": \"normal\"},\n    {\"recipient\": \"user@test.com\", \"channel\": \"email\", \"content\": \"Batch email\", \"subject\": \"Test\", \"priority\": \"low\"}\n  ]\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('All 3 accepted', function() { pm.expect(json.data.total_accepted).to.eql(3); });",
+						"pm.test('None rejected', function() { pm.expect(json.data.total_rejected).to.eql(0); });",
+						"pm.collectionVariables.set('batch_id', json.data.batch_id);"
+					]}}]
+				},
+				{
+					"name": "Batch Partial Reject",
+					"description": "1 valid + 1 invalid phone. Valid one accepted, invalid one rejected with error details.\n\nExpected: total_accepted=1, total_rejected=1",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications/batch",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"notifications\": [\n    {\"recipient\": \"+905551234567\", \"channel\": \"sms\", \"content\": \"Valid\", \"priority\": \"high\"},\n    {\"recipient\": \"invalid-phone\", \"channel\": \"sms\", \"content\": \"Invalid\", \"priority\": \"normal\"}\n  ]\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('1 accepted', function() { pm.expect(json.data.total_accepted).to.eql(1); });",
+						"pm.test('1 rejected', function() { pm.expect(json.data.total_rejected).to.eql(1); });",
+						"pm.test('Rejected has errors', function() {",
+						"    var rejected = json.data.notifications.find(n => n.status === 'rejected');",
+						"    pm.expect(rejected.errors).to.be.an('array').that.is.not.empty;",
+						"});"
+					]}}]
+				},
+				{
+					"name": "Batch Empty (should fail)",
+					"description": "Empty notifications array. Should return validation error.\n\nExpected: 400",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications/batch",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"notifications\": []\n}" }
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });"
+					]}}]
+				},
+				{
+					"name": "Get Batch by ID",
+					"description": "Retrieves all notifications in a batch.\n\nUses auto-captured: {{batch_id}}",
+					"request": { "method": "GET", "url": "{{baseUrl}}/api/v1/notifications/batch/{{batch_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Has notifications', function() { pm.expect(pm.response.json().data.notifications).to.be.an('array').that.is.not.empty; });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "5 — Query & Filter",
+			"description": "Notification retrieval, filtering by status/channel/date, and pagination.",
+			"item": [
+				{
+					"name": "Get by ID",
+					"description": "Retrieves notification by UUID.\n\nUses auto-captured: {{notification_id}}",
+					"request": { "method": "GET", "url": "{{baseUrl}}/api/v1/notifications/{{notification_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Correct ID', function() { pm.expect(pm.response.json().data.id).to.eql(pm.collectionVariables.get('notification_id')); });"
+					]}}]
+				},
+				{
+					"name": "Get by Invalid UUID",
+					"description": "Non-UUID string should return 400 INVALID_ID.",
+					"request": { "method": "GET", "url": "{{baseUrl}}/api/v1/notifications/not-a-valid-uuid" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Error code', function() { pm.expect(pm.response.json().error.code).to.eql('INVALID_ID'); });"
+					]}}]
+				},
+				{
+					"name": "Get Non-existent ID",
+					"description": "Valid UUID that doesn't exist should return 404.",
+					"request": { "method": "GET", "url": "{{baseUrl}}/api/v1/notifications/00000000-0000-0000-0000-000000000000" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 404', function() { pm.response.to.have.status(404); });"
+					]}}]
+				},
+				{
+					"name": "List All",
+					"description": "Lists all notifications with default pagination (page=1, page_size=20).",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?page=1&page_size=20", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"page","value":"1"},{"key":"page_size","value":"20"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Has meta', function() { pm.expect(pm.response.json().meta).to.not.be.null; });",
+						"pm.test('Has notifications', function() { pm.expect(pm.response.json().data.notifications).to.be.an('array'); });"
+					]}}]
+				},
+				{
+					"name": "Pagination — Page 1 (3 per page)",
+					"description": "Returns first 3 items. Validates page_size is respected.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?page=1&page_size=3", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"page","value":"1"},{"key":"page_size","value":"3"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Returns 3 items', function() { pm.expect(pm.response.json().data.notifications.length).to.eql(3); });",
+						"pm.test('Page is 1', function() { pm.expect(pm.response.json().meta.page).to.eql(1); });"
+					]}}]
+				},
+				{
+					"name": "Pagination — Page 2 (3 per page)",
+					"description": "Returns second page. Different items than page 1.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?page=2&page_size=3", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"page","value":"2"},{"key":"page_size","value":"3"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Page is 2', function() { pm.expect(pm.response.json().meta.page).to.eql(2); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Status: sent",
+					"description": "All returned items should have status 'sent'.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?status=sent", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"status","value":"sent"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('All sent', function() { pm.response.json().data.notifications.forEach(n => pm.expect(n.status).to.eql('sent')); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Status: cancelled",
+					"description": "Should find previously cancelled notifications.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?status=cancelled", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"status","value":"cancelled"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Channel: sms",
+					"description": "All returned items should be SMS.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?channel=sms", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"channel","value":"sms"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('All sms', function() { pm.response.json().data.notifications.forEach(n => pm.expect(n.channel).to.eql('sms')); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Channel: email",
+					"description": "All returned items should be email.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?channel=email", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"channel","value":"email"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('All email', function() { pm.response.json().data.notifications.forEach(n => pm.expect(n.channel).to.eql('email')); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Date Range",
+					"description": "Filters by created_at date range.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?start_date=2026-06-06T00:00:00Z&end_date=2026-06-06T23:59:59Z", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"start_date","value":"2026-06-06T00:00:00Z"},{"key":"end_date","value":"2026-06-06T23:59:59Z"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Has results', function() { pm.expect(pm.response.json().data.notifications.length).to.be.above(0); });"
+					]}}]
+				},
+				{
+					"name": "Filter — Combined (sms + sent)",
+					"description": "Multiple filters combined: channel=sms AND status=sent.",
+					"request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/notifications?channel=sms&status=sent&page=1&page_size=5", "host": ["{{baseUrl}}"], "path": ["api","v1","notifications"], "query": [{"key":"channel","value":"sms"},{"key":"status","value":"sent"},{"key":"page","value":"1"},{"key":"page_size","value":"5"}] } },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('All match', function() { pm.response.json().data.notifications.forEach(n => { pm.expect(n.channel).to.eql('sms'); pm.expect(n.status).to.eql('sent'); }); });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "6 — Cancel",
+			"description": "Only pending/queued notifications can be cancelled. Sent and already-cancelled ones should return 404.",
+			"item": [
+				{
+					"name": "Cancel Scheduled (pending → cancelled)",
+					"description": "Cancels the scheduled notification. Should succeed because status is pending.\n\nUses: {{scheduled_id}}",
+					"request": { "method": "DELETE", "url": "{{baseUrl}}/api/v1/notifications/{{scheduled_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Cancelled', function() { pm.expect(pm.response.json().data.message).to.eql('notification cancelled'); });"
+					]}}]
+				},
+				{
+					"name": "Cancel Again (already cancelled → fail)",
+					"description": "Same notification already cancelled. Should return 404.\n\nUses: {{scheduled_id}}",
+					"request": { "method": "DELETE", "url": "{{baseUrl}}/api/v1/notifications/{{scheduled_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 404', function() { pm.response.to.have.status(404); });"
+					]}}]
+				},
+				{
+					"name": "Cancel Sent (should fail)",
+					"description": "Tries to cancel a notification already delivered. Only pending/queued can be cancelled.\n\nUses: {{notification_id}} (already sent)\nExpected: 404",
+					"request": { "method": "DELETE", "url": "{{baseUrl}}/api/v1/notifications/{{notification_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 404', function() { pm.response.to.have.status(404); });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "7 — Validation Errors",
+			"description": "Channel-specific validation: recipient format, content limits, required fields.",
+			"item": [
+				{
+					"name": "SMS — Invalid Phone",
+					"description": "SMS requires E.164 format (+country + number). Expected: 400 with recipient error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"not-a-phone\",\n  \"channel\": \"sms\",\n  \"content\": \"Fail\",\n  \"priority\": \"high\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Recipient error', function() { pm.expect(pm.response.json().error.details.find(e => e.field === 'recipient')).to.not.be.undefined; });"
+					]}}]
+				},
+				{
+					"name": "Email — Missing Subject",
+					"description": "Email requires subject field. Expected: 400 with subject error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"content\": \"No subject\",\n  \"priority\": \"normal\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Subject error', function() { pm.expect(pm.response.json().error.details.find(e => e.field === 'subject')).to.not.be.undefined; });"
+					]}}]
+				},
+				{
+					"name": "Email — Invalid Address",
+					"description": "Email recipient must be valid. Expected: 400 with recipient error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"not-an-email\",\n  \"channel\": \"email\",\n  \"content\": \"Test\",\n  \"subject\": \"Test\",\n  \"priority\": \"normal\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Recipient error', function() { pm.expect(pm.response.json().error.details.find(e => e.field === 'recipient')).to.not.be.undefined; });"
+					]}}]
+				},
+				{
+					"name": "SMS — Content Too Long (>160)",
+					"description": "SMS content max 160 chars. Sending 200+ chars. Expected: 400 with content error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"This message is intentionally very long to exceed the 160 character SMS limit. We need enough characters to trigger the validation error. Adding more text here to be sure we pass it.\",\n  \"priority\": \"normal\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Content error', function() { pm.expect(pm.response.json().error.details.find(e => e.field === 'content')).to.not.be.undefined; });"
+					]}}]
+				},
+				{
+					"name": "Invalid Channel (telegram)",
+					"description": "Channel must be sms/email/push. Expected: 400 with channel error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"telegram\",\n  \"content\": \"Test\",\n  \"priority\": \"normal\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });"
+					]}}]
+				},
+				{
+					"name": "Invalid Priority (urgent)",
+					"description": "Priority must be high/normal/low. Expected: 400 with priority error.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"content\": \"Test\",\n  \"priority\": \"urgent\"\n}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });"
+					]}}]
+				},
+				{
+					"name": "Empty Body",
+					"description": "Empty JSON body. Expected: 400 INVALID_REQUEST.",
+					"request": { "method": "POST", "url": "{{baseUrl}}/api/v1/notifications", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{}"} },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });"
+					]}}]
+				}
+			]
+		},
+		{
+			"name": "8 — Templates",
+			"description": "Template system: create reusable message templates with {{variable}} placeholders, then use them in notifications.",
+			"item": [
+				{
+					"name": "List Templates (seeded)",
+					"description": "Lists all templates. Migration seeds 3 examples (otp_sms, welcome_email, order_push).",
+					"request": { "method": "GET", "url": "{{baseUrl}}/api/v1/templates" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+						"pm.test('Has templates', function() { pm.expect(pm.response.json().data.length).to.be.above(0); });",
+						"var templates = pm.response.json().data;",
+						"var otp = templates.find(t => t.name === 'otp_sms');",
+						"if (otp) pm.collectionVariables.set('template_id', otp.id);"
+					]}}]
+				},
+				{
+					"name": "Create Custom Template",
+					"description": "Creates a new SMS template with dynamic name (timestamp ensures uniqueness across runs).\n\nAuto-captures: custom_template_id",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/templates",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"name\": \"promo_sms_{{$timestamp}}\",\n  \"channel\": \"sms\",\n  \"body\": \"Hi {{name}}! {{discount}}% off with code {{code}}. Expires {{expiry}}.\"\n}"}
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"pm.test('Has body with variables', function() { pm.expect(pm.response.json().data.body).to.include('{{name}}'); });",
+						"pm.collectionVariables.set('custom_template_id', pm.response.json().data.id);"
+					]}}]
+				},
+				{
+					"name": "Send with Template (otp_sms)",
+					"description": "Creates notification using otp_sms template. No content field needed — template renders it.\n\nUses: {{template_id}} auto-captured from List Templates.\nExpected: content = 'Your verification code is 9876. Valid for 5 minutes.'",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"priority\": \"high\",\n  \"template_id\": \"{{template_id}}\",\n  \"variables\": {\"code\": \"9876\", \"minutes\": \"5\"}\n}"}
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 201', function() { pm.response.to.have.status(201); });",
+						"var json = pm.response.json();",
+						"pm.test('Template rendered', function() { pm.expect(json.data.content).to.include('9876'); });",
+						"pm.test('Variables replaced', function() { pm.expect(json.data.content).to.include('5 minutes'); });"
+					]}}]
+				},
+				{
+					"name": "Send with Invalid Template ID",
+					"description": "Non-existent template_id should return validation error.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"recipient\": \"+905551234567\",\n  \"channel\": \"sms\",\n  \"priority\": \"high\",\n  \"template_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"variables\": {\"code\": \"1234\"}\n}"}
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Template not found', function() { pm.expect(pm.response.json().error.details[0].field).to.eql('template_id'); });"
+					]}}]
+				},
+				{
+					"name": "Send with Wrong Channel Template",
+					"description": "Using an SMS template for email channel should fail — channel mismatch.",
+					"request": {
+						"method": "POST", "url": "{{baseUrl}}/api/v1/notifications",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"recipient\": \"user@example.com\",\n  \"channel\": \"email\",\n  \"priority\": \"normal\",\n  \"template_id\": \"{{template_id}}\",\n  \"variables\": {\"code\": \"1234\"}\n}"}
+					},
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 400', function() { pm.response.to.have.status(400); });",
+						"pm.test('Channel mismatch', function() {",
+						"    var json = pm.response.json();",
+						"    pm.expect(json.error.details).to.be.an('array').that.is.not.empty;",
+						"    pm.expect(json.error.details[0].message).to.include('does not match');",
+						"});"
+					]}}]
+				},
+				{
+					"name": "Delete Template",
+					"description": "Deletes the custom template created earlier.\n\nUses: {{custom_template_id}}",
+					"request": { "method": "DELETE", "url": "{{baseUrl}}/api/v1/templates/{{custom_template_id}}" },
+					"event": [{ "listen": "test", "script": { "exec": [
+						"pm.test('Status 200', function() { pm.response.to.have.status(200); });"
+					]}}]
+				}
+			]
+		}
+	]
+}

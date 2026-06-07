@@ -1,0 +1,174 @@
+openapi: "3.0.3"
+info:
+  title: Notify Engine API
+  description: Event-Driven Notification System — SMS, Email, Push
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      responses:
+        "200": { description: Healthy }
+
+  /metrics:
+    get:
+      summary: Real-time metrics (queue depth, success/failure rates, latency)
+      tags: [System]
+      responses:
+        "200": { description: Metrics data }
+
+  /api/v1/notifications:
+    post:
+      summary: Create notification
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRequest"
+            examples:
+              sms:
+                value: { "recipient": "+905551234567", "channel": "sms", "content": "Code: 1234", "priority": "high" }
+              email:
+                value: { "recipient": "user@example.com", "channel": "email", "content": "Welcome!", "subject": "Hello", "priority": "normal" }
+              with_template:
+                summary: Using a template
+                value: { "recipient": "+905551234567", "channel": "sms", "priority": "high", "template_id": "uuid-here", "variables": {"code": "9876", "minutes": "5"} }
+      responses:
+        "201": { description: Created }
+        "400": { description: Validation error }
+
+    get:
+      summary: List with filters + pagination
+      tags: [Notifications]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, queued, sending, sent, failed, cancelled] } }
+        - { name: channel, in: query, schema: { type: string, enum: [sms, email, push] } }
+        - { name: batch_id, in: query, schema: { type: string, format: uuid } }
+        - { name: start_date, in: query, schema: { type: string, format: date-time } }
+        - { name: end_date, in: query, schema: { type: string, format: date-time } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200": { description: Paginated list }
+
+  /api/v1/notifications/{id}:
+    get:
+      summary: Get by ID
+      tags: [Notifications]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Found }
+        "404": { description: Not found }
+    delete:
+      summary: Cancel pending
+      tags: [Notifications]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Cancelled }
+        "404": { description: Not cancellable }
+
+  /api/v1/notifications/batch:
+    post:
+      summary: Batch create (max 1000)
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+      responses:
+        "201": { description: Batch created }
+
+  /api/v1/notifications/batch/{batch_id}:
+    get:
+      summary: Get batch
+      tags: [Notifications]
+      parameters:
+        - { name: batch_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Batch found }
+
+  /api/v1/templates:
+    post:
+      summary: Create template
+      tags: [Templates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+            examples:
+              sms_template:
+                value: { "name": "otp_sms", "channel": "sms", "body": "Your code is {{code}}. Valid for {{minutes}} min." }
+              email_template:
+                value: { "name": "welcome", "channel": "email", "subject": "Welcome {{name}}!", "body": "<h1>Hi {{name}}</h1>" }
+      responses:
+        "201": { description: Created }
+        "400": { description: Validation error }
+    get:
+      summary: List all templates
+      tags: [Templates]
+      responses:
+        "200": { description: Template list }
+
+  /api/v1/templates/{id}:
+    get:
+      summary: Get template by ID
+      tags: [Templates]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Found }
+        "404": { description: Not found }
+    delete:
+      summary: Delete template
+      tags: [Templates]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Deleted }
+        "404": { description: Not found }
+
+components:
+  schemas:
+    CreateRequest:
+      type: object
+      required: [recipient, channel, priority]
+      properties:
+        recipient: { type: string, description: "E.164 for SMS, email address, or device token" }
+        channel: { type: string, enum: [sms, email, push] }
+        content: { type: string, description: "Required unless template_id is provided" }
+        subject: { type: string, description: "Required for email (unless template provides it)" }
+        priority: { type: string, enum: [high, normal, low] }
+        idempotency_key: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        template_id: { type: string, format: uuid, description: "Use a template instead of content" }
+        variables: { type: object, additionalProperties: { type: string }, description: "Template variable substitution" }
+
+    BatchRequest:
+      type: object
+      required: [notifications]
+      properties:
+        notifications:
+          type: array
+          items: { $ref: "#/components/schemas/CreateRequest" }
+          maxItems: 1000
+
+    CreateTemplateRequest:
+      type: object
+      required: [name, channel, body]
+      properties:
+        name: { type: string, description: "Unique template name" }
+        channel: { type: string, enum: [sms, email, push] }
+        subject: { type: string, description: "Required for email templates. Supports {{variables}}" }
+        body: { type: string, description: "Template body with {{variable}} placeholders" }
